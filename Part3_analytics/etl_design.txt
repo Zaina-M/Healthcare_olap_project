@@ -1,0 +1,206 @@
+
+ 1. Dimension Load Logic
+
+ 1.1 Patient Dimension (`dim_patient`)
+
+Source: `patients` (OLTP)
+
+Load Type: Slowly Changing Dimension (SCD Type 2 – history preserved)
+
+Logic:
+
+ Extract patient demographic attributes:
+
+  * MRN
+  * First name
+  * Last name
+  * Date of birth
+  * Gender
+* Generate a surrogate key (`patient_key`)
+* Compare incoming records with existing dimension rows using MRN as the natural key
+* If no existing record → insert new row
+* If attributes change (e.g., name, gender):
+
+  * Expire old record (`is_current = false`, `end_date = today`)
+  * Insert new record with updated values and `is_current = true`
+
+Pseudocode:
+
+
+FOR each patient in OLTP.patients:
+    IF MRN not found in dim_patient:
+        INSERT new patient row
+    ELSE IF patient attributes changed:
+        EXPIRE old dim record
+        INSERT new dim record
+
+
+
+ 1.2 Date Dimension (`dim_date`)
+
+Source: System-generated
+
+Load Type: One-time full load
+
+Logic:
+
+* Generate a continuous date range (e.g., 2010–2035)
+* Populate:
+
+  * date_key (YYYYMMDD)
+  * calendar_date
+  * day, month, month_name
+  * quarter, year
+  * weekday, is_weekend
+
+Pseudocode:
+
+FOR date FROM start_date TO end_date:
+    CALCULATE date attributes
+    INSERT into dim_date
+
+
+ 1.3 Other Dimensions (Specialty, Diagnosis, Procedure, Encounter Type)
+
+Load Type: SCD Type 1 (overwrite)
+
+**Logic:
+
+* Extract reference data
+* Insert new records if not present
+* Update descriptions if codes remain the same
+
+
+
+ 2. Fact Table Load Logic (`fact_encounters`)
+
+Source: `encounters`, `billing`, related OLTP tables
+
+Grain: One row per patient encounter
+
+
+
+ 2.1 Dimension Key Lookup
+
+For each encounter record:
+
+* Look up surrogate keys using natural keys:
+
+  * `patient_key` ← MRN
+  * `specialty_key` ← specialty_code
+  * `encounter_type_key` ← encounter_type_code
+  * `date_key` ← encounter_date
+  * `discharge_date_key` ← discharge_date (nullable)
+
+If lookup fails:
+
+ Use default “Unknown” dimension row (key = 0)
+
+
+
+ 2.2 Pre-Aggregated Metrics
+
+Calculated during load:
+
+* `total_allowed_amount`
+* `total_charges`
+* `length_of_stay` (discharge_date − admit_date)
+
+Logic:
+
+length_of_stay =
+    IF discharge_date IS NOT NULL
+    THEN discharge_date - admit_date
+    ELSE NULL
+
+
+Pre-aggregation reduces runtime calculations in OLAP queries.
+
+
+
+ 2.3 Missing Data Handling
+
+| Scenario                    | Handling                 |
+| --------------------------- | ------------------------ |
+| Missing dimension reference | Assign Unknown key (0)   |
+| Missing discharge date      | Allow NULL               |
+| Missing billing data        | Default amounts = 0      |
+| Late-arriving dimension     | Update foreign key later |
+
+
+
+ 3. Bridge Table Load Logic
+
+
+3.1 Diagnosis Bridge (`bridge_encounter_diagnoses`)
+
+Source: `encounter_diagnoses`
+
+Logic:
+
+* For each encounter:
+
+  * Look up `diagnosis_key` from `dim_diagnosis`
+  * Insert one row per diagnosis per encounter
+
+Pseudocode:
+
+
+FOR each diagnosis in encounter_diagnoses:
+    LOOKUP diagnosis_key
+    INSERT (encounter_key, diagnosis_key)
+
+
+ 3.2 Procedure Bridge (`bridge_encounter_procedures`)
+
+Source: `encounter_procedures`
+
+Logic:
+
+* Look up `procedure_key`
+* Insert one row per procedure per encounter
+
+
+ 4. Refresh Strategy
+
+
+
+ 4.1 Load Frequency
+
+| Table Type     | Strategy          |
+| -------------- | ----------------- |
+| Dimensions     | Daily incremental |
+| Fact table     | Daily incremental |
+| Date dimension | One-time          |
+| Bridge tables  | Daily incremental |
+
+
+ 4.2 Incremental Load Logic
+
+* Track last successful load timestamp
+* Extract only new or updated records
+* Use encounter_id and update_date for change detection
+
+
+4.3 Late-Arriving Facts
+
+Handling approach:
+
+* Insert fact row with available dimension keys
+* If dimension not yet loaded:
+
+  * Use Unknown key
+* Once dimension arrives:
+
+  * Update fact foreign key (post-load correction)
+
+
+ 5. Summary
+
+This ETL design:
+
+* Preserves historical patient data (SCD Type 2)
+* Optimizes analytics through denormalization
+* Supports late-arriving data
+* Aligns with Kimball dimensional modeling best practices
+

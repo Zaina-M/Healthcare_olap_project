@@ -1,0 +1,176 @@
+
+
+ Query 1: Monthly Encounters by Specialty
+
+ OLAP SQL (Star Schema)
+
+
+SELECT
+    d.year,
+    d.month,
+    d.month_name,
+    s.specialty_name,
+    et.encounter_type_code,
+    COUNT(f.encounter_key)        AS total_encounters,
+    COUNT(DISTINCT f.patient_key) AS unique_patients
+FROM star_schema.fact_encounters f
+JOIN star_schema.dim_date d
+    ON f.date_key = d.date_key
+JOIN star_schema.dim_specialty s
+    ON f.specialty_key = s.specialty_key
+JOIN star_schema.dim_encounter_type et
+    ON f.encounter_type_key = et.encounter_type_key
+GROUP BY
+    d.year, d.month, d.month_name,
+    s.specialty_name,
+    et.encounter_type_code
+ORDER BY
+    d.year, d.month, s.specialty_name;
+
+ Execution time estimate:~79 ms vs. ~78 ms original
+
+ Improvement Factor: ≈ 1x (no significant improvement)
+
+ Why performance is similar
+
+* Query still requires grouping across multiple dimensions
+* No pre-aggregated monthly summary table
+* Benefit is query simplicity, not speed, for this case
+
+Star schema still improves readability and maintainability
+
+
+
+ Query 2: Top Diagnosis–Procedure Pairs
+
+ OLAP SQL (Star Schema)
+
+SELECT
+    d.icd10_code,
+    p.cpt_code,
+    COUNT(DISTINCT bd.encounter_key) AS encounter_count
+FROM star_schema.bridge_encounter_diagnoses bd
+JOIN star_schema.bridge_encounter_procedures bp
+    ON bd.encounter_key = bp.encounter_key
+JOIN star_schema.dim_diagnosis d
+    ON bd.diagnosis_key = d.diagnosis_key
+JOIN star_schema.dim_procedure p
+    ON bp.procedure_key = p.procedure_key
+GROUP BY
+    d.icd10_code,
+    p.cpt_code
+ORDER BY encounter_count DESC;
+
+
+ Execution time estimat: ~78 ms vs. ~110 ms original
+
+ Improvement Factor: ≈ 1.4× faster
+
+ Why it’s faster
+
+* Diagnosis and procedure codes are denormalized
+* No deep joins across clinical tables
+* Bridge tables optimized for many-to-many analytics
+* Better indexing on surrogate keys
+
+
+
+ Query 3: 30-Day Readmission Rate by Specialty
+
+ OLAP SQL (Star Schema)
+
+WITH inpatient_encounters AS (
+    SELECT
+        f.encounter_key,
+        f.patient_key,
+        f.specialty_key,
+        d.calendar_date AS discharge_date
+    FROM star_schema.fact_encounters f
+    JOIN star_schema.dim_encounter_type et
+        ON f.encounter_type_key = et.encounter_type_key
+    JOIN star_schema.dim_date d
+        ON f.discharge_date_key = d.date_key
+    WHERE et.encounter_type_code = 'Inpatient'
+),
+readmissions AS (
+    SELECT DISTINCT
+        ie.encounter_key
+    FROM inpatient_encounters ie
+    JOIN star_schema.fact_encounters f2
+        ON ie.patient_key = f2.patient_key
+    JOIN star_schema.dim_date d2
+        ON f2.date_key = d2.date_key
+    WHERE d2.calendar_date > ie.discharge_date
+      AND d2.calendar_date <= DATE_ADD(ie.discharge_date, INTERVAL 30 DAY)
+)
+SELECT
+    s.specialty_name,
+    COUNT(DISTINCT ie.encounter_key) AS total_discharges,
+    COUNT(DISTINCT r.encounter_key)  AS readmissions,
+    ROUND(
+        COUNT(DISTINCT r.encounter_key)
+        / COUNT(DISTINCT ie.encounter_key),
+        4
+    ) AS readmission_rate
+FROM inpatient_encounters ie
+LEFT JOIN readmissions r
+    ON ie.encounter_key = r.encounter_key
+JOIN star_schema.dim_specialty s
+    ON ie.specialty_key = s.specialty_key
+GROUP BY s.specialty_name
+ORDER BY readmission_rate DESC
+LIMIT 1;
+
+
+Execution time estimate: ~47 ms vs.47 ms original
+
+ Improvement Factor: ≈ 1x
+
+ Why performance is similar
+
+* Heavy self-join on fact table
+* Time-window logic dominates cost
+* OLAP improves clarity, not raw speed here
+
+Much easier to reason about than OLTP version
+
+
+
+ Query 4: Revenue by Specialty & Month
+
+ OLAP SQL (Star Schema)
+
+
+SELECT
+    d.year,
+    d.month,
+    d.month_name,
+    s.specialty_name,
+    SUM(f.total_allowed_amount) AS total_allowed_revenue
+FROM star_schema.fact_encounters f
+JOIN star_schema.dim_date d
+    ON f.date_key = d.date_key
+JOIN star_schema.dim_specialty s
+    ON f.specialty_key = s.specialty_key
+GROUP BY
+    d.year, d.month, d.month_name,
+    s.specialty_name
+ORDER BY
+    d.year, d.month,
+    total_allowed_revenue DESC;
+
+
+ Execution time estimate: ~46 ms vs. ~62 ms original
+
+
+ Improvement Factor: ≈ 1.35× faster
+
+ Why it’s faster
+
+* Financial data stored directly in fact table
+* No billing/payment joins
+* Star schema optimized for SUM + GROUP BY
+* Smaller join graph
+
+ Star schema does not always make queries dramatically faster,but it simplifies SQL, reduces join depth, and scales far better as data volume grows or when pre-aggregations are added.
+

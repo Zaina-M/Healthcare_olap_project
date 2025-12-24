@@ -1,0 +1,493 @@
+ Decision 1: Fact Table Grain
+
+Option A: One row per encounter
+
+
+ Rationale:
+
+The fact table grain is defined as one row per patient encounter.
+
+This grain best supports the four analytical queries by minimizing row explosion while preserving the ability to aggregate across diagnoses, procedures, specialties, time, and revenue.
+
+
+
+ Why Option A is the best fit for the 4 queries
+
+ Query 1: Monthly Encounters by Specialty
+
+* Encounters are the natural unit of measure
+* Counting encounters and distinct patients is straightforward
+* No duplication caused by multiple diagnoses or procedures
+* Time-based aggregation aligns cleanly with encounter-level dates
+
+ Query 2: Top Diagnosis–Procedure Pairs
+
+* Diagnosis–procedure analysis is handled via bridge tables, not by exploding the fact
+* Avoids Cartesian multiplication of diagnoses × procedures in the fact table
+* Keeps the core fact table compact and performant
+ Query 3: 30-Day Readmission Rate
+
+* Readmissions are defined at the encounter level
+* Self-joins operate on a smaller, stable fact table
+* Prevents unnecessary duplication that would distort readmission metrics
+
+ Query 4: Revenue by Specialty & Month
+
+* Revenue is tied to encounters (via billing)
+* Summation is accurate and efficient at encounter grain
+* No risk of double-counting revenue across diagnoses or procedures
+
+
+
+ Why Options B and C were rejected
+
+ Option B: One row per diagnosis per encounter
+
+* Inflates row count significantly
+* Distorts encounter counts and readmission logic
+* Makes revenue aggregation error-prone (double counting)
+* Forces frequent DISTINCT logic, hurting performance
+
+ Option C: One row per procedure per encounter
+
+* Same row explosion problem as Option B
+* Procedures are optional and variable per encounter
+* Increases storage and compute cost without improving core analytics
+
+
+ Final Decision Summary
+
+Choosing one row per encounter:
+
+* Preserves semantic correctness
+* Minimizes data volume
+* Avoids fan-out joins
+* Supports all four queries efficiently
+* Aligns with standard healthcare dimensional modeling practices
+
+This grain shifts complexity from runtime queries to controlled dimensional relationships, which is the correct trade-off for analytical workloads.
+
+
+
+
+ Decision 2: Dimension Tables
+
+The dimensional model uses a star schema centered on a fact table at encounter grain.
+Dimensions are designed to support the four analytical queries while remaining stable and low-cardinality where possible.
+
+
+
+ Date Dimension (`dim_date`)
+
+Purpose:
+Support month-based aggregation, time filtering, and trend analysis.
+
+Key:
+
+date_key (surrogate, PK)
+
+Attributes:
+
+* full_date
+* day
+* month
+* month_name
+* month_year (e.g. `2025-01`)
+* quarter
+* year
+* is_weekend
+
+Used by:
+
+* Monthly encounters
+* Revenue by month
+* Readmission window calculations
+
+
+
+Patient Dimension (`dim_patient`)
+
+Purpose:
+Enable unique patient counts and longitudinal analysis without exposing PHI.
+
+Key:
+
+* patient_key (surrogate, PK)
+
+Attributes:
+
+* patient_id (natural key, degenerate)
+* gender
+* date_of_birth
+* age
+* age_group (derived)
+* mrn
+
+Used by:
+
+* Unique patient metrics
+* Readmission logic
+
+
+
+ Provider Dimension (`dim_provider`)
+
+Purpose:
+Analyze encounters and revenue by provider and clinical role.
+
+Key:
+
+* provider_key (surrogate, PK)
+
+Attributes:
+
+* provider_id (natural key)
+* first_name
+* last_name
+* credential
+* specialty_key
+* department_key
+
+Used by:
+
+* Specialty attribution
+* Provider-level rollups
+
+
+
+Specialty Dimension (`dim_specialty`)
+
+Purpose:
+Primary clinical aggregation dimension.
+
+Key:
+
+* specialty_key (surrogate, PK)
+
+Attributes:
+
+* specialty_id (natural key)
+* specialty_name
+* specialty_code
+
+Used by:
+
+ All four analytical queries
+
+
+ Department Dimension (`dim_department`)
+
+Purpose:
+Operational and capacity analysis.
+
+Key:
+
+* `department_key` (surrogate, PK)
+
+Attributes:
+
+*  department_id (natural key)
+*  department_name
+*  floor
+*  capacity
+
+Used by:
+
+* Operational slicing
+* Departmental reporting
+
+
+
+ Encounter Type Dimension (`dim_encounter_type`)
+
+Purpose:
+Standardize encounter categorization.
+
+Key:
+
+* `encounter_type_key` (surrogate, PK)
+
+Attributes:
+
+*  encounter_type_code (`Inpatient`, `Outpatient`, `ER`)
+*  encounter_type_description
+
+Used by:
+
+* Monthly encounter analysis
+* Readmission filtering
+
+
+
+ Diagnosis Dimension (`dim_diagnosis`)
+
+Purpose:
+Enable diagnosis-level analytics without inflating the fact table.
+
+Key:
+
+* `diagnosis_key` (surrogate, PK)
+
+Attributes:
+
+*  diagnosis_id (natural key)
+*  icd10_code
+*  icd10_description
+
+Relationship:
+
+ Linked via a bridge table to the fact
+
+Used by:
+
+* Diagnosis–procedure pairing
+* Clinical analysis
+
+
+
+ Procedure Dimension (`dim_procedure`)
+
+Purpose:
+Enable procedure-level analysis and pairing.
+
+Key:
+
+* `procedure_key` (surrogate, PK)
+
+Attributes:
+
+* procedure_id (natural key)
+* cpt_code
+* cpt_description
+
+Relationship:
+
+* Linked via a bridge table to the fact
+
+Used by:
+
+* Diagnosis–procedure combinations
+* Utilization analysis
+
+
+
+Bridge Tables (Explicit Design Choice)
+
+ `bridge_encounter_diagnosis`
+
+* encounter_key
+* diagnosis_key
+* diagnosis_sequence
+
+ `bridge_encounter_procedure`
+
+*  encounter_key
+*  procedure_key
+*  procedure_date_key
+
+These preserve many-to-many relationships without exploding the fact table.
+
+
+ Summary of Dimension Strategy
+
+* Low-cardinality attributes → direct dimensions
+* High-cardinality clinical codes → dimensions + bridges
+* Time handled via a full date dimension
+* Fact table remains compact and stable
+
+This design directly addresses the performance failures observed in the OLTP queries while maintaining analytical flexibility.
+
+
+
+
+ Decision 3: Pre-Aggregated Metrics
+
+To reduce runtime joins and aggregations, selected metrics are pre-aggregated and stored directly in the fact table at the encounter grain.
+
+
+ Metrics Stored in the Fact Table
+
+ 1. `diagnosis_count`
+
+Definition:
+Number of diagnoses associated with an encounter.
+
+Justification:
+
+* Avoids joining `bridge_encounter_diagnosis` for simple counts
+* Eliminates fan-out joins when filtering or grouping by diagnosis volume
+* Supports quality and complexity analysis at encounter level
+
+
+
+ 2. `procedure_count`
+
+Definition:
+Number of procedures performed during an encounter.
+
+Justification:
+
+* Prevents joins to `bridge_encounter_procedure` for utilization metrics
+* Reduces row explosion during aggregation
+* Enables fast filtering (e.g., encounters with procedures vs none)
+
+
+
+3. `total_allowed_amount`
+
+Definition:
+Sum of all allowed billing amounts tied to an encounter.
+
+Justification:
+
+* Eliminates join to `billing` for revenue rollups
+* Prevents double-counting when multiple billing rows exist
+* Enables fast revenue analysis by specialty, month, or department
+
+
+
+4. `total_claim_amount` (optional but recommended)
+
+Definition:
+Sum of submitted claim amounts per encounter.
+
+Justification:
+
+* Enables margin and denial analysis without billing joins
+* Supports financial KPIs at encounter grain
+
+
+
+5. `is_readmission_candidate`
+
+Definition:
+Boolean flag indicating inpatient encounters eligible for readmission tracking.
+
+Justification:
+
+* Avoids repeated filtering on encounter type
+* Simplifies readmission logic and reduces scan cost
+
+
+ 6. `length_of_stay_days`
+
+Definition:
+Discharge date − admission date (in days).
+
+Justification:
+
+* Avoids date arithmetic at query time
+* Enables fast operational and outcome analysis
+
+
+
+ Why Pre-Aggregating These Metrics Improves Performance
+
+ 1. Eliminates expensive JOINs
+
+* Billing, diagnosis, and procedure data are the most join-heavy tables
+* Pre-aggregation removes the need to touch them for common queries
+
+ 2. Prevents row explosion
+
+* Many-to-many joins are resolved during ETL, not at query time
+* Fact table remains compact and predictable
+
+3. Enables simpler GROUP BY plans
+
+* Aggregations operate on already-summarized values
+* Hash and sort memory usage is reduced
+
+ 4. Improves concurrency and cache efficiency
+
+* Fewer tables accessed per query
+* Less I/O and reduced contention with write workloads
+
+5. Shifts cost from runtime to ETL
+
+* One-time computation during data load
+* Predictable and controllable processing window
+
+This is the key optimization that converts the OLTP pain points into a performant analytical model.
+
+
+
+ Decision 4: Bridge Tables
+
+Decision:
+Yes — use bridge tables for both diagnosis-to-encounter and procedure-to-encounter relationships.
+
+
+
+ Bridge Tables Defined:
+
+ `bridge_encounter_diagnosis`
+
+* `encounter_key`
+* `diagnosis_key`
+* `diagnosis_sequence`
+* `is_primary_diagnosis` (derived)
+
+ `bridge_encounter_procedure`
+
+* `encounter_key`
+* `procedure_key`
+* `procedure_date_key`
+
+
+
+Why Bridge Tables Are Required
+
+ 1. Encounters have true many-to-many relationships
+
+* An encounter can have multiple diagnoses
+* A diagnosis appears across many encounters
+* Same applies to procedures
+
+Flattening these into the fact table would violate the chosen grain.
+
+
+
+ 2. Prevents fact table row explosion
+
+* Without bridges, the fact would need one row per diagnosis or procedure
+* This multiplies fact rows and breaks encounter-level metrics
+* Bridge tables keep the fact table compact and stable
+
+
+
+ 3. Preserves analytical flexibility
+
+* Allows diagnosis-only, procedure-only, or paired analysis
+* Supports diagnosis–procedure combinations without duplicating measures
+* Enables optional joins when clinical detail is required
+
+
+
+ 4. Improves query performance for common workloads
+
+* Most queries use encounter-level metrics and dimensions
+* Bridge tables are only joined when necessary
+* Reduces average query cost and system load
+
+
+
+5. Aligns with dimensional modeling best practices
+
+* High-cardinality, repeating attributes belong in bridges
+* Fact table should store measures, not repeating descriptive rows
+* Maintains clear semantic meaning of the fact grain
+
+
+
+ Why Not Flatten Diagnoses or Procedures into the Fact:
+
+* Would require one fact row per diagnosis or procedure
+* Breaks revenue and encounter counting logic
+* Forces DISTINCT usage in nearly every query
+* Increases storage and compute costs significantly
+
+This design isolates complexity instead of spreading it across every analytical query.
+
+
+

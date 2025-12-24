@@ -1,0 +1,393 @@
+Q1. Monthly Encounters by Speciality 
+SQL Query:
+
+SELECT
+    DATE_FORMAT(e.encounter_date, '%Y-%m') AS encounter_month,
+    s.specialty_name,
+    e.encounter_type,
+    COUNT(e.encounter_id) AS total_encounters,
+    COUNT(DISTINCT e.patient_id) AS unique_patients
+FROM encounters e
+JOIN providers p ON e.provider_id = p.provider_id
+JOIN specialties s ON p.specialty_id = s.specialty_id
+GROUP BY
+    encounter_month,
+    s.specialty_name,
+    e.encounter_type
+ORDER BY
+    encounter_month,
+    s.specialty_name,
+    e.encounter_type;
+
+Schema analysis:
+
+ Tables Joined:
+encounters:	Core fact table (visits, dates, patients)
+providers:	Connects encounters to specialties
+specialties:	Specialty dimension
+ Total Tables Joined: 3
+
+encounters → providers (to get specialty_id) → 1 join
+providers → specialties (to get specialty_name) → 2nd join
+So total 2 joins.
+
+Execution Time:~78 milliseconds
+
+Estimated rows scanned:~9,934(Estimated rows scanned ≈ number of rows in encounters.)
+
+Bottleneck Identified:
+
+Root cause: JOIN chain + GROUP BY on OLTP data
+1️. Join chain on a high-volume table
+
+Every row in encounters joins to providers
+
+Then to specialties
+
+Join happens before aggregation, increasing memory pressure
+
+2️. GROUP BY on derived column
+DATE_FORMAT(e.encounter_date, '%Y-%m')
+
+
+Function on indexed column
+
+Prevents ordered index scans
+
+Forces compute per row
+
+3️. COUNT(DISTINCT)
+
+Requires deduplication per group
+
+Expensive hash/sort operations
+
+4️. OLTP access pattern mismatch
+
+Schema optimized for inserts and point reads
+
+Not optimized for multi-dimensional aggregation
+
+
+ QUESTION 2: Top Diagnosis–Procedure Pairs(Top Diagnosis-Procedure Pairs(This counts how often a diagnosis and a procedure co-occur in the same encounter.)
+
+ SQL Query:
+
+SELECT
+    d.icd10_code,
+    p.cpt_code,
+    COUNT(DISTINCT e.encounter_id) AS encounter_count
+FROM encounters e
+JOIN encounter_diagnoses ed
+    ON ed.encounter_id = e.encounter_id
+JOIN diagnoses d
+    ON d.diagnosis_id = ed.diagnosis_id
+JOIN encounter_procedures ep
+    ON ep.encounter_id = e.encounter_id
+JOIN procedures p
+    ON p.procedure_id = ep.procedure_id
+GROUP BY
+    d.icd10_code,
+    p.cpt_code
+ORDER BY
+    encounter_count DESC;
+
+ Schema Analysis:
+
+ How diagnosis & procedure data are joined
+
+Diagnosis and procedure data are linked indirectly through the encounter.
+
+Join path:
+
+
+encounters
+   ├── encounter_diagnoses → diagnoses
+   └── encounter_procedures → procedures
+
+
+Each junction table represents a many-to-many relationship with encounters.
+
+Tables joined:
+
+| Table                | Role                             |
+| -------------------- | -------------------------------- |
+| encounters           | Common parent entity             |
+| encounter_diagnoses  | Junction (encounter ↔ diagnosis) |
+| diagnoses            | ICD dimension                    |
+| encounter_procedures | Junction (encounter ↔ procedure) |
+| procedures           | CPT dimension                    |
+
+Tables joined: 5
+Number of joins: 4
+Junction tables: 2
+
+
+ Execution time: ~110 milliseconds
+
+ Estimated rows scanned:~16,242
+
+Actual row scanned: ~10,045
+
+
+Bottleneck Identified
+
+ Root cause: Row explosion from two junction tables
+
+1️. Many-to-many × many-to-many join
+
+Each encounter produces:
+diagnoses × procedures rows before aggregation.
+
+ 2️. Explosion happens before GROUP BY
+
+* The database must materialize all combinations
+* Aggregation occurs only afterward
+
+ 3️. High-cardinality GROUP BY
+
+* ICD × CPT combinations are numerous
+* Hash/sort buffers grow and may spill to disk
+
+ 4️. OLTP indexing doesn’t prevent this
+
+* Indexes help locate rows
+* They do not reduce the combinatorial join output
+
+ Why this is slow:
+
+This query is slow because:
+
+* Two junction tables create a combinatorial fan-out
+* The database processes far more rows than it returns
+* Aggregation happens only after expensive joins
+* The workload is analytical on a transactional schema
+
+
+
+ QUESTION 3: 30-Day Readmission Rate (by Specialty)
+
+ SQL Query:
+WITH inpatient_discharges AS (
+    SELECT
+        e.encounter_id,
+        e.patient_id,
+        e.provider_id,
+        e.discharge_date
+    FROM encounters e
+    WHERE e.encounter_type = 'Inpatient'
+      AND e.discharge_date IS NOT NULL
+),
+readmissions AS (
+    SELECT
+        d.encounter_id AS discharge_encounter_id,
+        r.encounter_id AS readmission_encounter_id
+    FROM inpatient_discharges d
+    JOIN encounters r
+        ON r.patient_id = d.patient_id
+       AND r.encounter_date > d.discharge_date
+       AND r.encounter_date <= d.discharge_date + INTERVAL 30 DAY
+)
+SELECT
+    s.specialty_name,
+    COUNT(DISTINCT d.encounter_id) AS total_discharges,
+    COUNT(DISTINCT rm.readmission_encounter_id) AS readmissions,
+    COUNT(DISTINCT rm.readmission_encounter_id)
+        / COUNT(DISTINCT d.encounter_id) AS readmission_rate
+FROM inpatient_discharges d
+JOIN providers p
+    ON p.provider_id = d.provider_id
+JOIN specialties s
+    ON s.specialty_id = p.specialty_id
+LEFT JOIN readmissions rm
+    ON rm.discharge_encounter_id = d.encounter_id
+GROUP BY
+    s.specialty_name
+ORDER BY
+    readmission_rate DESC
+LIMIT 1;
+
+
+ Schema Analysis:
+
+ How readmission is detected
+
+A readmission is identified by:
+
+* An inpatient encounter with a `discharge_date`
+* A subsequent encounter for the same patient
+* The return occurs after discharge and within 30 days
+
+```sql
+r.encounter_date > d.discharge_date
+AND r.encounter_date <= d.discharge_date + INTERVAL 30 DAY
+```
+
+This requires a self-join on encounters by `patient_id`.
+
+
+
+ Tables joined:
+
+| Table                | Purpose                           |
+| -------------------- | --------------------------------- |
+| encounters (alias d) | Inpatient discharges              |
+| encounters (alias r) | Subsequent encounters (self-join) |
+| providers            | Resolve specialty                 |
+| specialties          | Specialty dimension               |
+
+Tables joined: 4
+Self-joins: 1
+Total joins: 3
+
+
+ Performance
+ Execution time:~47 millisconds
+ Estimated rows scanned:~1,414
+
+
+ Bottleneck Identified
+
+ Root cause: Self-join on a large transactional table
+
+1. Self-join fan-out
+
+Each inpatient discharge is compared against:
+
+* All later encounters for the same patient
+* Creates repeated scans and comparisons
+
+ 2️. Range predicate on dates
+
+```sql
+encounter_date BETWEEN discharge_date AND discharge_date + 30
+```
+
+* Indexes help only partially
+* Range conditions still require scanning candidate rows
+
+ 3️. Aggregation after self-join
+
+* Readmission detection happens **before** grouping
+* Large intermediate result sets are materialized
+
+4️. OLTP contention
+
+* `encounters` is write-heavy
+* Analytical self-joins compete with inserts and updates
+* Cache churn and CPU pressure increase latency
+
+Why this is slow 
+This query is slow because:
+
+* It performs a **self-join on a high-volume OLTP table
+* The join includes range-based date logic
+* Each inpatient discharge fans out into multiple comparisons
+* Aggregation occurs only after expensive joins
+
+
+
+ QUESTION 4: Revenue by Specialty & Month
+
+ SQL Query:
+
+SELECT
+    DATE_FORMAT(b.claim_date, '%Y-%m') AS claim_month,
+    s.specialty_name,
+    SUM(b.allowed_amount) AS total_allowed_amount
+FROM billing b
+JOIN encounters e
+    ON e.encounter_id = b.encounter_id
+JOIN providers p
+    ON p.provider_id = e.provider_id
+JOIN specialties s
+    ON s.specialty_id = p.specialty_id
+GROUP BY
+    DATE_FORMAT(b.claim_date, '%Y-%m'),
+    s.specialty_name
+ORDER BY
+    total_allowed_amount DESC;
+
+
+ Schema Analysis
+
+ JOIN chain
+
+
+billing
+   → encounters
+       → providers
+           → specialties
+
+Billing is the fact source, specialty is reached via encounter → provider.
+
+
+Tables joined
+
+| Table       | Role                              |
+| ----------- | --------------------------------- |
+| billing     | Financial fact table              |
+| encounters  | Links billing to clinical context |
+| providers   | Resolves specialty                |
+| specialties | Specialty dimension               |
+
+Tables joined: 4
+Number of joins:3
+
+
+
+ Performance
+
+ Execution time:62 millisconds
+
+ Estimated rows scanned:~9,834
+
+Actuall row scanned:10,000
+
+ Bottleneck Identified
+
+ Root cause: Multiple JOINs + aggregation on OLTP data
+
+ 1️. Long join chain before aggregation
+
+* Rows flow through 3 joins before aggregation
+* Each join adds CPU and memory overhead
+
+ 2️. GROUP BY on derived date
+
+```sql
+DATE_FORMAT(b.claim_date, '%Y-%m')
+```
+
+* Function-based grouping
+* Prevents effective index usage on `claim_date`
+
+ 3️. SUM aggregation on large row set
+
+* Requires scanning all relevant billing rows
+* Aggregation happens only after joins
+
+ 4️. OLTP indexing mismatch
+
+* Indexes support point lookups (`encounter_id`)
+* They do not optimize multi-dimensional revenue rollups
+
+ Why this is slow 
+
+This query is slow because:
+
+* Revenue aggregation is performed across a long join chain
+* Grouping occurs after all joins are completed
+* Date functions block index-based ordering
+* The workload is analytical on a transactional schema
+
+
+
+
+
+
+ 
+ 
+ 
+
+
