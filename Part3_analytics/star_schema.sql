@@ -1,6 +1,4 @@
--- =========================================
 -- STAR SCHEMA OVERVIEW
--- =========================================
 -- This star schema is designed for analytical (OLAP) workloads.
 -- It supports encounter-level healthcare analytics such as:
 -- volume trends, revenue analysis, length of stay, readmissions,
@@ -8,16 +6,15 @@
 --
 -- Grain of the fact table: ONE ROW PER ENCOUNTER
 
--- =========================================
+
 -- STAR SCHEMA: DIMENSION TABLES
--- =========================================
 
 CREATE DATABASE IF NOT EXISTS star_schema;
 USE star_schema;
 
--- =========================================
+
 -- Date Dimension
--- =========================================
+
 -- Purpose:
 -- Central time dimension used for all date-based analytics.
 -- Enables slicing facts by day, month, quarter, year, and weekend.
@@ -34,9 +31,8 @@ CREATE TABLE dim_date (
     is_weekend BOOLEAN
 );
 
--- =========================================
+
 -- Patient Dimension
--- =========================================
 -- Purpose:
 -- Stores descriptive attributes about patients.
 -- Used to analyze encounters by demographics such as gender,
@@ -56,9 +52,8 @@ CREATE TABLE dim_patient (
     UNIQUE (patient_id)
 );
 
--- =========================================
+
 -- Specialty Dimension
--- =========================================
 -- Purpose:
 -- Represents the medical specialty involved in an encounter
 -- (e.g., Cardiology, Pediatrics).
@@ -72,9 +67,8 @@ CREATE TABLE dim_specialty (
     UNIQUE (specialty_id)
 );
 
--- =========================================
+
 -- Department Dimension
--- =========================================
 -- Purpose:
 -- Describes the physical or organizational department where
 -- encounters take place.
@@ -89,9 +83,8 @@ CREATE TABLE dim_department (
     UNIQUE (department_id)
 );
 
--- =========================================
+
 -- Provider Dimension
--- =========================================
 -- Purpose:
 -- Stores information about healthcare providers (doctors, clinicians).
 -- Linked to specialty and department dimensions.
@@ -109,9 +102,8 @@ CREATE TABLE dim_provider (
     FOREIGN KEY (department_key) REFERENCES dim_department (department_key)
 );
 
--- =========================================
+
 -- Encounter Type Dimension
--- =========================================
 -- Purpose:
 -- Classifies encounters by type (Inpatient, Outpatient, ER).
 -- Allows filtering and comparison of utilization patterns
@@ -138,9 +130,8 @@ CREATE TABLE dim_diagnosis (
     UNIQUE (diagnosis_id)
 );
 
--- =========================================
+
 -- OPTIONAL: Procedure Dimension
--- =========================================
 -- Purpose:
 -- Stores standardized procedure information (CPT codes).
 -- Used for procedure-level analytics without inflating the fact table.
@@ -153,9 +144,8 @@ CREATE TABLE dim_procedure (
 );
 
 
--- =========================================
+
 -- FACT TABLE: Encounter-Level Facts
--- =========================================
 -- Purpose:
 -- Central fact table that records measurable data about encounters.
 -- Grain: ONE ROW PER ENCOUNTER.
@@ -164,9 +154,8 @@ CREATE TABLE dim_procedure (
 CREATE TABLE fact_encounters (
     encounter_key BIGINT AUTO_INCREMENT PRIMARY KEY,
 
-    -- ===============================
+    
     -- Foreign Keys (Dimensions)
-    -- ===============================
     encounter_id INT NOT NULL,                    -- OLTP natural key (degenerate)
     date_key INT NOT NULL,                        -- Encounter start date
     discharge_date_key INT,                       -- Discharge date (if applicable)
@@ -176,9 +165,9 @@ CREATE TABLE fact_encounters (
     department_key INT NOT NULL,
     encounter_type_key INT NOT NULL,
 
-    -- ===============================
+    
     -- Pre-Aggregated Metrics
-    -- ===============================
+   
     diagnosis_count INT DEFAULT 0,
     procedure_count INT DEFAULT 0,
     total_allowed_amount DECIMAL(12,2) DEFAULT 0.00,
@@ -186,9 +175,8 @@ CREATE TABLE fact_encounters (
     length_of_stay_days INT,
     is_readmission_candidate BOOLEAN,
 
-    -- ===============================
     -- Constraints
-    -- ===============================
+   
     UNIQUE (encounter_id),
 
     FOREIGN KEY (date_key) REFERENCES dim_date (date_key),
@@ -257,9 +245,9 @@ CREATE INDEX idx_bridge_diag_diagnosis
     ON bridge_encounter_diagnoses (diagnosis_key);
 
 
--- =========================================
+
 -- Bridge: Encounter ↔ Procedure
--- =========================================
+
 -- Purpose:
 -- Resolves the many-to-many relationship between encounters and procedures.
 -- Allows procedure-level analysis and timing without increasing
@@ -365,9 +353,9 @@ ON DUPLICATE KEY UPDATE `date` = VALUES(`date`);
 -- This maps encounters to dimension surrogate keys by joining via natural keys in source tables.
 INSERT INTO star_schema.fact_encounters (
   encounter_id,
-  patient_sk,
-  provider_sk,
-  department_sk,
+  patient_key,
+  provider_key,
+  department_key,
   encounter_type,
   start_timestamp,
   end_timestamp,
@@ -378,9 +366,9 @@ INSERT INTO star_schema.fact_encounters (
 )
 SELECT
   e.encounter_id,
-  dp.patient_id AS patient_sk,
-  prm.provider_id AS provider_sk,
-  dd.department_id AS department_sk,
+  dp.patient_id AS patient_key,
+  prm.provider_id AS provider_key,
+  dd.department_id AS department_key,
   e.encounter_type,
   e.start_timestamp,
   e.end_timestamp,
@@ -405,8 +393,8 @@ ON DUPLICATE KEY UPDATE
 -- 3) Bridge tables
 
 -- bridge_encounter_diagnoses
-INSERT INTO star_schema.bridge_encounter_diagnoses (encounter_id, diagnosis_sk, diagnosis_rank)
-SELECT ed.encounter_id, ddx.diagnosis_id AS diagnosis_sk, ed.rank
+INSERT INTO star_schema.bridge_encounter_diagnoses (encounter_id, diagnosis_key, diagnosis_rank)
+SELECT ed.encounter_id, ddx.diagnosis_id AS diagnosis_key, ed.rank
 FROM encounter_diagnoses ed
 JOIN diagnoses d ON ed.diagnosis_id = d.diagnosis_id
 JOIN star_schema.dim_diagnosis ddx ON ddx.diagnosis_code = d.diagnosis_code

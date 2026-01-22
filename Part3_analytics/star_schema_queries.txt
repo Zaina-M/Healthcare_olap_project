@@ -31,12 +31,10 @@ ORDER BY
 
  Improvement Factor: ≈ 1x (no significant improvement)
 
- Why performance is similar
+ Why performance is similar:
 
-* Query still requires grouping across multiple dimensions
-* No pre-aggregated monthly summary table
-* Benefit is query simplicity, not speed, for this case
-
+The query still scans the full fact table at encounter grain and performs multi-dimensional aggregation.
+Without a pre-aggregated monthly fact table, the star schema primarily improves readability and maintainability rather than raw execution speed.
 Star schema still improves readability and maintainability
 
 
@@ -62,15 +60,15 @@ GROUP BY
 ORDER BY encounter_count DESC;
 
 
- Execution time estimat: ~78 ms vs. ~110 ms original
+ Execution time estimate: ~78 ms vs. ~110 ms original
 
  Improvement Factor: ≈ 1.4× faster
 
  Why it’s faster
 
-* Diagnosis and procedure codes are denormalized
+* Diagnosis and procedure attributes are resolved through surrogate keys, reducing join complexity.
 * No deep joins across clinical tables
-* Bridge tables optimized for many-to-many analytics
+* Bridge tables optimized for analytical many-to-many relationships, avoiding row explosion common in OLTP joins.
 * Better indexing on surrogate keys
 
 
@@ -131,6 +129,7 @@ Execution time estimate: ~47 ms vs.47 ms original
 * Heavy self-join on fact table
 * Time-window logic dominates cost
 * OLAP improves clarity, not raw speed here
+The star schema does not eliminate the need for fact-to-fact self-joins when analyzing temporal relationships between events.
 
 Much easier to reason about than OLTP version
 
@@ -170,7 +169,7 @@ ORDER BY
 * Financial data stored directly in fact table
 * No billing/payment joins
 * Star schema optimized for SUM + GROUP BY
-* Smaller join graph
+* Reduced join depth and elimination of transactional billing joins.
 
- Star schema does not always make queries dramatically faster,but it simplifies SQL, reduces join depth, and scales far better as data volume grows or when pre-aggregations are added.
-
+ While star schemas do not always yield dramatic performance improvements for all queries, they significantly simplify SQL, reduce join depth, and provide a scalable foundation for analytics.
+As data volume grows or pre-aggregated fact tables are introduced, the performance advantages of dimensional modeling become increasingly pronounced.

@@ -2,7 +2,7 @@
 
 ## Why Is the Star Schema Faster?
 
-The primary reason the star schema improves analytical performance is **query simplification**. In the original OLTP schema, data is highly normalized, meaning information required for analysis is spread across many tables. Analytical queries therefore require **multiple joins**, complex grouping, and on-the-fly calculations.
+The primary reason the star schema improves analytical performance is **simplified join paths and reduced runtime computation**. In the original OLTP schema, data is highly normalized, meaning information required for analysis is spread across many tables. Analytical queries therefore require **multiple joins**, complex grouping, and on-the-fly calculations.
 
 In contrast, the star schema is designed specifically for analytics:
 
@@ -81,9 +81,9 @@ Analytical queries typically scan large volumes of data but return summarized re
 
 ### What Was Gained
 
-* **Significantly simpler queries**
+* **Significantly simpler nd more maintainable queries**
 * **Improved and predictable performance**
-* **Business-friendly schema**
+* **Business-friendly and analyst-accessible schema**
 
   * Analysts can query without deep schema knowledge
 * **Scalability**

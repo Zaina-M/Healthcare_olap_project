@@ -69,7 +69,8 @@ Schema optimized for inserts and point reads
 Not optimized for multi-dimensional aggregation
 
 
- QUESTION 2: Top Diagnosis–Procedure Pairs(Top Diagnosis-Procedure Pairs(This counts how often a diagnosis and a procedure co-occur in the same encounter.)
+ QUESTION 2: Top Diagnosis–Procedure Pairs(Top Diagnosis-Procedure Pairs(This counts how often a diagnosis and a procedure co-occur in the same encounter.))
+ 
 
  SQL Query:
 
@@ -280,7 +281,7 @@ encounter_date BETWEEN discharge_date AND discharge_date + 30
 Why this is slow 
 This query is slow because:
 
-* It performs a **self-join on a high-volume OLTP table
+* It performs a self-join on a high-volume OLTP table
 * The join includes range-based date logic
 * Each inpatient discharge fans out into multiple comparisons
 * Aggregation occurs only after expensive joins
