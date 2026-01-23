@@ -272,30 +272,7 @@ CREATE TABLE bridge_encounter_procedures (
 CREATE INDEX idx_bridge_proc_procedure
     ON bridge_encounter_procedures (procedure_key);
 
-/*
-Design intent 
 
-Many-to-many relationships are isolated from the fact table
-
-Fact table remains one row per encounter
-
-Bridge tables preserve full clinical detail only when needed
-
-Composite PKs prevent duplication
-
-Indexes support diagnosis- or procedure-driven queries
-
-What this enables:
-
-Diagnosis–procedure pairing without fact explosion
-
-Accurate encounter and revenue aggregation
-
-Optional joins instead of mandatory joins
-
-Predictable query performance
-
-*/
 
 
 -- 1) Populate dimension tables from production
