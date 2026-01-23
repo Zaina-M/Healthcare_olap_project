@@ -40,7 +40,10 @@ CREATE TABLE dim_patient (
     age INT,
     age_group VARCHAR(20),
     mrn VARCHAR(20),
-    UNIQUE (patient_id)
+    effective_start_date DATE,
+    effective_end_date DATE,
+    is_current BOOLEAN,
+    INDEX (patient_id)
 );
 
 
@@ -86,11 +89,10 @@ CREATE TABLE dim_provider (
     provider_id INT NOT NULL,                -- OLTP natural key
     provider_name VARCHAR(200),
     credential VARCHAR(20),
-    specialty_key INT,
-    department_key INT,
-    UNIQUE (provider_id),
-    FOREIGN KEY (specialty_key) REFERENCES dim_specialty (specialty_key),
-    FOREIGN KEY (department_key) REFERENCES dim_department (department_key)
+    effective_start_date DATE,
+    effective_end_date DATE,
+    is_current BOOLEAN,
+    INDEX (provider_id)
 );
 
 
@@ -310,42 +312,65 @@ ON DUPLICATE KEY UPDATE
     floor = VALUES(floor),
     capacity = VALUES(capacity);
 
--- dim_patient
-INSERT INTO star_schema.dim_patient (patient_id, first_name, last_name, gender, date_of_birth, age, age_group, mrn)
+-- dim_patient (SCD Type 2)
+-- 1. Expire changed records
+UPDATE star_schema.dim_patient dp
+JOIN production.patients p ON dp.patient_id = p.patient_id
+SET dp.effective_end_date = CURDATE(),
+    dp.is_current = FALSE
+WHERE dp.is_current = TRUE
+  AND (dp.first_name <> p.first_name 
+       OR dp.last_name <> p.last_name 
+       OR dp.gender <> p.gender 
+       OR dp.mrn <> p.mrn);
+
+-- 2. Insert new records (both brand new and updated versions)
+INSERT INTO star_schema.dim_patient (
+    patient_id, first_name, last_name, gender, date_of_birth, 
+    age, age_group, mrn, effective_start_date, effective_end_date, is_current
+)
 SELECT 
-    patient_id, first_name, last_name, gender, date_of_birth,
-    TIMESTAMPDIFF(YEAR, date_of_birth, CURDATE()) AS age,
+    p.patient_id, p.first_name, p.last_name, p.gender, p.date_of_birth,
+    TIMESTAMPDIFF(YEAR, p.date_of_birth, CURDATE()) AS age,
     CASE 
-        WHEN TIMESTAMPDIFF(YEAR, date_of_birth, CURDATE()) < 18 THEN 'Child'
-        WHEN TIMESTAMPDIFF(YEAR, date_of_birth, CURDATE()) BETWEEN 18 AND 39 THEN 'Adult'
-        WHEN TIMESTAMPDIFF(YEAR, date_of_birth, CURDATE()) BETWEEN 40 AND 64 THEN 'Middle Age'
+        WHEN TIMESTAMPDIFF(YEAR, p.date_of_birth, CURDATE()) < 18 THEN 'Child'
+        WHEN TIMESTAMPDIFF(YEAR, p.date_of_birth, CURDATE()) BETWEEN 18 AND 39 THEN 'Adult'
+        WHEN TIMESTAMPDIFF(YEAR, p.date_of_birth, CURDATE()) BETWEEN 40 AND 64 THEN 'Middle Age'
         ELSE 'Senior'
     END AS age_group,
-    mrn
-FROM production.patients
-ON DUPLICATE KEY UPDATE 
-    first_name = VALUES(first_name),
-    last_name = VALUES(last_name),
-    gender = VALUES(gender),
-    age = VALUES(age),
-    age_group = VALUES(age_group);
+    p.mrn,
+    CURDATE(),
+    '9999-12-31',
+    TRUE
+FROM production.patients p
+LEFT JOIN star_schema.dim_patient dp ON p.patient_id = dp.patient_id AND dp.is_current = TRUE
+WHERE dp.patient_id IS NULL;
 
--- dim_provider
-INSERT INTO star_schema.dim_provider (provider_id, provider_name, credential, specialty_key, department_key)
+-- dim_provider (SCD Type 2)
+-- 1. Expire changed records
+UPDATE star_schema.dim_provider dprov
+JOIN production.providers p ON dprov.provider_id = p.provider_id
+SET dprov.effective_end_date = CURDATE(),
+    dprov.is_current = FALSE
+WHERE dprov.is_current = TRUE
+  AND (dprov.provider_name <> CONCAT(p.first_name, ' ', p.last_name) 
+       OR dprov.credential <> p.credential);
+
+-- 2. Insert new records
+INSERT INTO star_schema.dim_provider (
+    provider_id, provider_name, credential, 
+    effective_start_date, effective_end_date, is_current
+)
 SELECT 
     p.provider_id, 
     CONCAT(p.first_name, ' ', p.last_name) AS provider_name, 
     p.credential,
-    ds.specialty_key,
-    dd.department_key
+    CURDATE(),
+    '9999-12-31',
+    TRUE
 FROM production.providers p
-JOIN star_schema.dim_specialty ds ON p.specialty_id = ds.specialty_id
-JOIN star_schema.dim_department dd ON p.department_id = dd.department_id
-ON DUPLICATE KEY UPDATE 
-    provider_name = VALUES(provider_name),
-    credential = VALUES(credential),
-    specialty_key = VALUES(specialty_key),
-    department_key = VALUES(department_key);
+LEFT JOIN star_schema.dim_provider dprov ON p.provider_id = dprov.provider_id AND dprov.is_current = TRUE
+WHERE dprov.provider_id IS NULL;
 
 -- dim_encounter_type
 INSERT INTO star_schema.dim_encounter_type (encounter_type_code, encounter_type_description)
@@ -392,9 +417,14 @@ SELECT
     DATEDIFF(e.discharge_date, e.encounter_date) AS length_of_stay_days,
     CASE WHEN e.encounter_type = 'Inpatient' THEN TRUE ELSE FALSE END AS is_readmission_candidate
 FROM production.encounters e
-JOIN star_schema.dim_patient dp ON e.patient_id = dp.patient_id
-JOIN star_schema.dim_provider dprov ON e.provider_id = dprov.provider_id
-JOIN star_schema.dim_specialty ds ON dprov.specialty_key = ds.specialty_key
+JOIN star_schema.dim_patient dp 
+    ON e.patient_id = dp.patient_id 
+    AND e.encounter_date BETWEEN dp.effective_start_date AND dp.effective_end_date
+JOIN star_schema.dim_provider dprov 
+    ON e.provider_id = dprov.provider_id 
+    AND e.encounter_date BETWEEN dprov.effective_start_date AND dprov.effective_end_date
+JOIN production.providers p_prod ON e.provider_id = p_prod.provider_id
+JOIN star_schema.dim_specialty ds ON p_prod.specialty_id = ds.specialty_id
 JOIN star_schema.dim_department dd ON e.department_id = dd.department_id
 JOIN star_schema.dim_encounter_type det ON e.encounter_type = det.encounter_type_code
 LEFT JOIN production.encounter_diagnoses ed ON e.encounter_id = ed.encounter_id
