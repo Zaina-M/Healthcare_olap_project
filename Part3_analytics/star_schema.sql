@@ -1,12 +1,3 @@
--- STAR SCHEMA OVERVIEW
--- This star schema is designed for analytical (OLAP) workloads.
--- It supports encounter-level healthcare analytics such as:
--- volume trends, revenue analysis, length of stay, readmissions,
--- diagnosis and procedure analysis, and provider performance.
---
--- Grain of the fact table: ONE ROW PER ENCOUNTER
-
-
 -- STAR SCHEMA: DIMENSION TABLES
 
 CREATE DATABASE IF NOT EXISTS star_schema;
