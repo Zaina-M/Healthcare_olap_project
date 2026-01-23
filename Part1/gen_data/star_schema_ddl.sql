@@ -27,7 +27,8 @@ FROM (
     UNION
     SELECT claim_date FROM production.billing
 ) dates
-WHERE d IS NOT NULL;
+WHERE d IS NOT NULL
+ON DUPLICATE KEY UPDATE calendar_date = VALUES(calendar_date);
 
 
 # 2️. SPECIALTY DIMENSION
@@ -41,7 +42,10 @@ SELECT
     specialty_id,
     specialty_name,
     specialty_code
-FROM production.specialties;
+FROM production.specialties
+ON DUPLICATE KEY UPDATE 
+    specialty_name = VALUES(specialty_name),
+    specialty_code = VALUES(specialty_code);
 
 
 # 3️. DEPARTMENT DIMENSION
@@ -58,7 +62,11 @@ SELECT
     department_name,
     floor,
     capacity
-FROM production.departments;
+FROM production.departments
+ON DUPLICATE KEY UPDATE 
+    department_name = VALUES(department_name),
+    floor = VALUES(floor),
+    capacity = VALUES(capacity);
 
 
 # 4️. ENCOUNTER TYPE DIMENSION
@@ -71,7 +79,8 @@ INSERT INTO star_schema.dim_encounter_type (
 SELECT DISTINCT
     encounter_type,
     CONCAT(encounter_type, ' Encounter')
-FROM production.encounters;
+FROM production.encounters
+ON DUPLICATE KEY UPDATE encounter_type_description = VALUES(encounter_type_description);
 
 
 # 5️. PATIENT DIMENSION (derived attributes)
@@ -101,7 +110,13 @@ SELECT
         ELSE 'Senior'
     END AS age_group,
     p.mrn
-FROM production.patients p;
+FROM production.patients p
+ON DUPLICATE KEY UPDATE 
+    first_name = VALUES(first_name),
+    last_name = VALUES(last_name),
+    gender = VALUES(gender),
+    age = VALUES(age),
+    age_group = VALUES(age_group);
 
 
 # 6️. PROVIDER DIMENSION (key mapping)
@@ -124,7 +139,12 @@ FROM production.providers pr
 JOIN star_schema.dim_specialty ds
     ON pr.specialty_id = ds.specialty_id
 JOIN star_schema.dim_department dd
-    ON pr.department_id = dd.department_id;
+    ON pr.department_id = dd.department_id
+ON DUPLICATE KEY UPDATE 
+    provider_name = VALUES(provider_name),
+    credential = VALUES(credential),
+    specialty_key = VALUES(specialty_key),
+    department_key = VALUES(department_key);
 
 
 # 7️. DIAGNOSIS DIMENSION
@@ -139,7 +159,10 @@ SELECT
     diagnosis_id,
     icd10_code,
     icd10_description
-FROM production.diagnoses;
+FROM production.diagnoses
+ON DUPLICATE KEY UPDATE 
+    icd10_code = VALUES(icd10_code),
+    icd10_description = VALUES(icd10_description);
 
 
 # 8️. PROCEDURE DIMENSION
@@ -153,7 +176,10 @@ SELECT
     procedure_id,
     cpt_code,
     cpt_description
-FROM production.procedures;
+FROM production.procedures
+ON DUPLICATE KEY UPDATE 
+    cpt_code = VALUES(cpt_code),
+    cpt_description = VALUES(cpt_description);
 
 
 # 9️. FACT TABLE (THIS IS THE CORE)
@@ -219,7 +245,13 @@ LEFT JOIN production.encounter_procedures ep
 LEFT JOIN production.billing b
     ON e.encounter_id = b.encounter_id
 
-GROUP BY e.encounter_id;
+GROUP BY e.encounter_id
+ON DUPLICATE KEY UPDATE 
+    diagnosis_count = VALUES(diagnosis_count),
+    procedure_count = VALUES(procedure_count),
+    total_allowed_amount = VALUES(total_allowed_amount),
+    total_claim_amount = VALUES(total_claim_amount),
+    length_of_stay_days = VALUES(length_of_stay_days);
 
 
 #10 BRIDGE: ENCOUNTER ↔ DIAGNOSIS
@@ -240,7 +272,8 @@ FROM production.encounter_diagnoses ed
 JOIN star_schema.fact_encounters fe
     ON ed.encounter_id = fe.encounter_id
 JOIN star_schema.dim_diagnosis dd
-    ON ed.diagnosis_id = dd.diagnosis_id;
+    ON ed.diagnosis_id = dd.diagnosis_id
+ON DUPLICATE KEY UPDATE diagnosis_sequence = VALUES(diagnosis_sequence);
 
 
 # 1️1 BRIDGE: ENCOUNTER ↔ PROCEDURE
@@ -259,5 +292,6 @@ FROM production.encounter_procedures ep
 JOIN star_schema.fact_encounters fe
     ON ep.encounter_id = fe.encounter_id
 JOIN star_schema.dim_procedure dp
-    ON ep.procedure_id = dp.procedure_id;
+    ON ep.procedure_id = dp.procedure_id
+ON DUPLICATE KEY UPDATE procedure_date_key = VALUES(procedure_date_key);
 

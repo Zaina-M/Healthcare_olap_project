@@ -300,110 +300,166 @@ Predictable query performance
 */
 
 
+-- 1) Populate dimension tables from production
+
+-- dim_date
+INSERT INTO star_schema.dim_date (
+    date_key, calendar_date, day_of_month, month, month_name, quarter, year, is_weekend
+)
+SELECT DISTINCT
+    DATE_FORMAT(d, '%Y%m%d') AS date_key,
+    d AS calendar_date,
+    DAY(d),
+    MONTH(d),
+    MONTHNAME(d),
+    QUARTER(d),
+    YEAR(d),
+    CASE WHEN DAYOFWEEK(d) IN (1,7) THEN TRUE ELSE FALSE END
+FROM (
+    SELECT DATE(encounter_date) d FROM production.encounters
+    UNION
+    SELECT DATE(discharge_date) FROM production.encounters
+    UNION
+    SELECT procedure_date FROM production.encounter_procedures
+    UNION
+    SELECT claim_date FROM production.billing
+) dates
+WHERE d IS NOT NULL
+ON DUPLICATE KEY UPDATE calendar_date = VALUES(calendar_date);
+
 -- dim_specialty
-INSERT INTO dim_specialty (specialty_name, specialty_code)
-SELECT DISTINCT specialty_name, specialty_code
-FROM specialties
-ON DUPLICATE KEY UPDATE specialty_name = VALUES(specialty_name);
+INSERT INTO star_schema.dim_specialty (specialty_id, specialty_name, specialty_code)
+SELECT specialty_id, specialty_name, specialty_code
+FROM production.specialties
+ON DUPLICATE KEY UPDATE 
+    specialty_name = VALUES(specialty_name),
+    specialty_code = VALUES(specialty_code);
 
 -- dim_department
-INSERT INTO star_schema.dim_department (department_name, department_code)
-SELECT DISTINCT department_name, CAST(department_id AS CHAR)
-FROM departments
-ON DUPLICATE KEY UPDATE department_name = VALUES(department_name);
-
--- dim_provider
-INSERT INTO star_schema.dim_provider (provider_name, provider_npi, provider_code)
-SELECT DISTINCT CONCAT(first_name, ' ', last_name) AS provider_name,
-       CAST(npi AS CHAR) AS provider_npi,
-       CAST(provider_code AS CHAR) AS provider_code
-FROM providers
-ON DUPLICATE KEY UPDATE provider_name = VALUES(provider_name);
+INSERT INTO star_schema.dim_department (department_id, department_name, floor, capacity)
+SELECT department_id, department_name, floor, capacity
+FROM production.departments
+ON DUPLICATE KEY UPDATE 
+    department_name = VALUES(department_name),
+    floor = VALUES(floor),
+    capacity = VALUES(capacity);
 
 -- dim_patient
-INSERT INTO star_schema.dim_patient (patient_first_name, patient_last_name, patient_birth_date, patient_sex, patient_mrn)
-SELECT DISTINCT first_name, last_name, birth_date, gender, patient_mrn
-FROM patients
-ON DUPLICATE KEY UPDATE patient_first_name = VALUES(patient_first_name);
+INSERT INTO star_schema.dim_patient (patient_id, first_name, last_name, gender, date_of_birth, age, age_group, mrn)
+SELECT 
+    patient_id, first_name, last_name, gender, date_of_birth,
+    TIMESTAMPDIFF(YEAR, date_of_birth, CURDATE()) AS age,
+    CASE 
+        WHEN TIMESTAMPDIFF(YEAR, date_of_birth, CURDATE()) < 18 THEN 'Child'
+        WHEN TIMESTAMPDIFF(YEAR, date_of_birth, CURDATE()) BETWEEN 18 AND 39 THEN 'Adult'
+        WHEN TIMESTAMPDIFF(YEAR, date_of_birth, CURDATE()) BETWEEN 40 AND 64 THEN 'Middle Age'
+        ELSE 'Senior'
+    END AS age_group,
+    mrn
+FROM production.patients
+ON DUPLICATE KEY UPDATE 
+    first_name = VALUES(first_name),
+    last_name = VALUES(last_name),
+    gender = VALUES(gender),
+    age = VALUES(age),
+    age_group = VALUES(age_group);
+
+-- dim_provider
+INSERT INTO star_schema.dim_provider (provider_id, provider_name, credential, specialty_key, department_key)
+SELECT 
+    p.provider_id, 
+    CONCAT(p.first_name, ' ', p.last_name) AS provider_name, 
+    p.credential,
+    ds.specialty_key,
+    dd.department_key
+FROM production.providers p
+JOIN star_schema.dim_specialty ds ON p.specialty_id = ds.specialty_id
+JOIN star_schema.dim_department dd ON p.department_id = dd.department_id
+ON DUPLICATE KEY UPDATE 
+    provider_name = VALUES(provider_name),
+    credential = VALUES(credential),
+    specialty_key = VALUES(specialty_key),
+    department_key = VALUES(department_key);
+
+-- dim_encounter_type
+INSERT INTO star_schema.dim_encounter_type (encounter_type_code, encounter_type_description)
+SELECT DISTINCT encounter_type, CONCAT(encounter_type, ' Encounter')
+FROM production.encounters
+ON DUPLICATE KEY UPDATE encounter_type_description = VALUES(encounter_type_description);
 
 -- dim_diagnosis
-INSERT INTO star_schema.dim_diagnosis (diagnosis_code, diagnosis_description)
-SELECT DISTINCT diagnosis_code, diagnosis_description
-FROM diagnoses
-ON DUPLICATE KEY UPDATE diagnosis_description = VALUES(diagnosis_description);
+INSERT INTO star_schema.dim_diagnosis (diagnosis_id, icd10_code, icd10_description)
+SELECT diagnosis_id, icd10_code, icd10_description
+FROM production.diagnoses
+ON DUPLICATE KEY UPDATE 
+    icd10_code = VALUES(icd10_code),
+    icd10_description = VALUES(icd10_description);
 
 -- dim_procedure
-INSERT INTO star_schema.dim_procedure (procedure_code, procedure_description)
-SELECT DISTINCT procedure_code, procedure_description
-FROM procedures
-ON DUPLICATE KEY UPDATE procedure_description = VALUES(procedure_description);
+INSERT INTO star_schema.dim_procedure (procedure_id, cpt_code, cpt_description)
+SELECT procedure_id, cpt_code, cpt_description
+FROM production.procedures
+ON DUPLICATE KEY UPDATE 
+    cpt_code = VALUES(cpt_code),
+    cpt_description = VALUES(cpt_description);
 
--- dim_date (populate from encounter start_timestamp and billing_date)
-INSERT INTO star_schema.dim_date (`date`, year, month, day, quarter, day_of_week, is_weekend)
-SELECT d, YEAR(d), MONTH(d), DAY(d), QUARTER(d), DAYOFWEEK(d), (CASE WHEN DAYOFWEEK(d) IN (1,7) THEN TRUE ELSE FALSE END)
-FROM (
-  SELECT DISTINCT DATE(start_timestamp) AS d FROM encounters
-  UNION
-  SELECT DISTINCT billing_date AS d FROM billing
-) x
-WHERE d IS NOT NULL
-ON DUPLICATE KEY UPDATE `date` = VALUES(`date`);
-
--- 2) Fact table: fact_encounters
--- This maps encounters to dimension surrogate keys by joining via natural keys in source tables.
+-- 2) Populate Fact Table
 INSERT INTO star_schema.fact_encounters (
-  encounter_id,
-  patient_key,
-  provider_key,
-  department_key,
-  encounter_type,
-  start_timestamp,
-  end_timestamp,
-  encounter_date_sk,
-  total_charge,
-  total_paid,
-  billing_status
+    encounter_id, date_key, discharge_date_key, patient_key, provider_key,
+    specialty_key, department_key, encounter_type_key,
+    diagnosis_count, procedure_count, total_allowed_amount, total_claim_amount,
+    length_of_stay_days, is_readmission_candidate
 )
-SELECT
-  e.encounter_id,
-  dp.patient_id AS patient_key,
-  prm.provider_id AS provider_key,
-  dd.department_id AS department_key,
-  e.encounter_type,
-  e.start_timestamp,
-  e.end_timestamp,
-  dd_date.date_id AS encounter_date_sk,
-  b.charge_amount AS total_charge,
-  b.paid_amount AS total_paid,
-  b.status AS billing_status
-FROM encounters e
-LEFT JOIN patients p ON e.patient_id = p.patient_id
-LEFT JOIN star_schema.dim_patient dp ON dp.patient_mrn = p.patient_mrn
-LEFT JOIN providers pr ON e.provider_id = pr.provider_id
-LEFT JOIN star_schema.dim_provider prm ON prm.provider_npi = CAST(pr.npi AS CHAR)
-LEFT JOIN departments d ON e.department_id = d.department_id
-LEFT JOIN star_schema.dim_department dd ON dd.department_name = d.department_name
-LEFT JOIN billing b ON b.encounter_id = e.encounter_id
-LEFT JOIN star_schema.dim_date dd_date ON dd_date.`date` = DATE(e.start_timestamp)
-ON DUPLICATE KEY UPDATE
-  total_charge = VALUES(total_charge),
-  total_paid = VALUES(total_paid),
-  billing_status = VALUES(billing_status);
+SELECT 
+    e.encounter_id,
+    DATE_FORMAT(e.encounter_date, '%Y%m%d') AS date_key,
+    DATE_FORMAT(e.discharge_date, '%Y%m%d') AS discharge_date_key,
+    dp.patient_key,
+    dprov.provider_key,
+    ds.specialty_key,
+    dd.department_key,
+    det.encounter_type_key,
+    COUNT(DISTINCT ed.diagnosis_id) AS diagnosis_count,
+    COUNT(DISTINCT ep.procedure_id) AS procedure_count,
+    SUM(b.allowed_amount) AS total_allowed_amount,
+    SUM(b.claim_amount) AS total_claim_amount,
+    DATEDIFF(e.discharge_date, e.encounter_date) AS length_of_stay_days,
+    CASE WHEN e.encounter_type = 'Inpatient' THEN TRUE ELSE FALSE END AS is_readmission_candidate
+FROM production.encounters e
+JOIN star_schema.dim_patient dp ON e.patient_id = dp.patient_id
+JOIN star_schema.dim_provider dprov ON e.provider_id = dprov.provider_id
+JOIN star_schema.dim_specialty ds ON dprov.specialty_key = ds.specialty_key
+JOIN star_schema.dim_department dd ON e.department_id = dd.department_id
+JOIN star_schema.dim_encounter_type det ON e.encounter_type = det.encounter_type_code
+LEFT JOIN production.encounter_diagnoses ed ON e.encounter_id = ed.encounter_id
+LEFT JOIN production.encounter_procedures ep ON e.encounter_id = ep.encounter_id
+LEFT JOIN production.billing b ON e.encounter_id = b.encounter_id
+GROUP BY e.encounter_id
+ON DUPLICATE KEY UPDATE 
+    diagnosis_count = VALUES(diagnosis_count),
+    procedure_count = VALUES(procedure_count),
+    total_allowed_amount = VALUES(total_allowed_amount),
+    total_claim_amount = VALUES(total_claim_amount),
+    length_of_stay_days = VALUES(length_of_stay_days);
 
--- 3) Bridge tables
+-- 3) Populate Bridge Tables
+INSERT INTO star_schema.bridge_encounter_diagnoses (encounter_key, diagnosis_key, diagnosis_sequence, is_primary_diagnosis)
+SELECT 
+    fe.encounter_key,
+    dd.diagnosis_key,
+    ed.diagnosis_sequence,
+    CASE WHEN ed.diagnosis_sequence = 1 THEN TRUE ELSE FALSE END
+FROM production.encounter_diagnoses ed
+JOIN star_schema.fact_encounters fe ON ed.encounter_id = fe.encounter_id
+JOIN star_schema.dim_diagnosis dd ON ed.diagnosis_id = dd.diagnosis_id
+ON DUPLICATE KEY UPDATE diagnosis_sequence = VALUES(diagnosis_sequence);
 
--- bridge_encounter_diagnoses
-INSERT INTO star_schema.bridge_encounter_diagnoses (encounter_id, diagnosis_key, diagnosis_rank)
-SELECT ed.encounter_id, ddx.diagnosis_id AS diagnosis_key, ed.rank
-FROM encounter_diagnoses ed
-JOIN diagnoses d ON ed.diagnosis_id = d.diagnosis_id
-JOIN star_schema.dim_diagnosis ddx ON ddx.diagnosis_code = d.diagnosis_code
-ON DUPLICATE KEY UPDATE diagnosis_rank = VALUES(diagnosis_rank);
-
--- bridge_encounter_procedures
-INSERT INTO star_schema.bridge_encounter_procedures (encounter_id, procedure_sk, procedure_rank)
-SELECT ep.encounter_id, dp2.procedure_id AS procedure_sk, ep.rank
-FROM encounter_procedures ep
-JOIN procedures prc ON ep.procedure_id = prc.procedure_id
-JOIN star_schema.dim_procedure dp2 ON dp2.procedure_code = prc.procedure_code
-ON DUPLICATE KEY UPDATE procedure_rank = VALUES(procedure_rank);
+INSERT INTO star_schema.bridge_encounter_procedures (encounter_key, procedure_key, procedure_date_key)
+SELECT 
+    fe.encounter_key,
+    dp.procedure_key,
+    DATE_FORMAT(ep.procedure_date, '%Y%m%d')
+FROM production.encounter_procedures ep
+JOIN star_schema.fact_encounters fe ON ep.encounter_id = fe.encounter_id
+JOIN star_schema.dim_procedure dp ON ep.procedure_id = dp.procedure_id
+ON DUPLICATE KEY UPDATE procedure_date_key = VALUES(procedure_date_key);

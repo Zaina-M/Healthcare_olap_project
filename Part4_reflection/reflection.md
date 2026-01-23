@@ -8,27 +8,26 @@ In contrast, the star schema is designed specifically for analytics:
 
 ### Join Reduction
 
-* **OLTP queries** often join:
-
-  * encounters
-  * patients
-  * providers
-  * specialties
-  * billing
-  * diagnoses
-  * procedures
+- **OLTP queries** often join:
+  - encounters
+  - patients
+  - providers
+  - specialties
+  - billing
+  - diagnoses
+  - procedures
     This can result in **6–10 joins per query**.
-* **Star schema queries** typically join:
 
-  * 1 fact table
-  * 2–4 dimension tables
+- **Star schema queries** typically join:
+  - 1 fact table
+  - 2–4 dimension tables
     This reduces join depth to **3–5 joins**, all on indexed surrogate keys.
 
 Fewer joins reduce:
 
-* CPU usage
-* memory consumption
-* join reordering cost in the optimizer
+- CPU usage
+- memory consumption
+- join reordering cost in the optimizer
 
 ---
 
@@ -36,14 +35,14 @@ Fewer joins reduce:
 
 The star schema stores **pre-aggregated measures** directly in the fact table, including:
 
-* `total_allowed_amount`
-* `length_of_stay`
-* encounter-level counts
+- `total_allowed_amount`
+- `length_of_stay`
+- encounter-level counts
 
 In the OLTP model, these metrics must be:
 
-* calculated at query time
-* derived using multiple joins and aggregations
+- calculated at query time
+- derived using multiple joins and aggregations
 
 Pre-computation shifts workload from **query time** to **ETL time**, which is ideal for analytical systems.
 
@@ -53,10 +52,10 @@ Pre-computation shifts workload from **query time** to **ETL time**, which is id
 
 Denormalization:
 
-* reduces table lookups
-* avoids recursive joins
-* improves cache locality
-* allows the optimizer to use **bitmap and star-join optimizations**
+- reduces table lookups
+- avoids recursive joins
+- improves cache locality
+- allows the optimizer to use **bitmap and star-join optimizations**
 
 Analytical queries typically scan large volumes of data but return summarized results. The star schema aligns perfectly with this access pattern.
 
@@ -66,29 +65,27 @@ Analytical queries typically scan large volumes of data but return summarized re
 
 ### What Was Lost
 
-* **Data duplication**
+- **Data duplication**
+  - Dimension attributes (e.g., specialty names) are repeated across many fact rows.
 
-  * Dimension attributes (e.g., specialty names) are repeated across many fact rows.
-* **ETL complexity**
+- **ETL complexity**
+  - Requires surrogate key management
+  - Needs incremental load logic and data quality checks
 
-  * Requires surrogate key management
-  * Needs incremental load logic and data quality checks
-* **Storage efficiency**
-
-  * More disk space than a normalized schema
+- **Storage efficiency**
+  - More disk space than a normalized schema
 
 ---
 
 ### What Was Gained
 
-* **Significantly simpler nd more maintainable queries**
-* **Improved and predictable performance**
-* **Business-friendly and analyst-accessible schema**
+- **Significantly simpler and more maintainable queries**
+- **Improved and predictable performance**
+- **Business-friendly and analyst-accessible schema**
+  - Analysts can query without deep schema knowledge
 
-  * Analysts can query without deep schema knowledge
-* **Scalability**
-
-  * Query performance degrades much more slowly as data grows
+- **Scalability**
+  - Query performance degrades much more slowly as data grows
 
 ---
 
@@ -104,20 +101,20 @@ Yes. For analytical workloads, the trade-off is justified. Storage is relatively
 
 Diagnoses and procedures have a **many-to-many relationship** with encounters:
 
-* One encounter → many diagnoses
-* One diagnosis → many encounters
+- One encounter → many diagnoses
+- One diagnosis → many encounters
 
 Embedding these directly into the fact table would:
 
-* violate the fact table grain
-* cause row explosion
-* inflate metrics such as revenue or encounter counts
+- violate the fact table grain
+- cause row explosion
+- inflate metrics such as revenue or encounter counts
 
 Bridge tables preserve:
 
-* correct cardinality
-* analytical flexibility
-* clean separation of concerns
+- correct cardinality
+- analytical flexibility
+- clean separation of concerns
 
 ---
 
@@ -125,14 +122,14 @@ Bridge tables preserve:
 
 **Costs:**
 
-* Additional joins for diagnosis/procedure analysis
-* Slightly more complex queries
+- Additional joins for diagnosis/procedure analysis
+- Slightly more complex queries
 
 **Benefits:**
 
-* Accurate aggregations
-* No metric distortion
-* Better long-term scalability
+- Accurate aggregations
+- No metric distortion
+- Better long-term scalability
 
 ---
 
@@ -140,8 +137,8 @@ Bridge tables preserve:
 
 In production, the same approach would be used. However:
 
-* Frequently queried diagnosis/procedure aggregates might be materialized
-* Summary fact tables could be added for high-demand reports
+- Frequently queried diagnosis/procedure aggregates might be materialized
+- Summary fact tables could be added for high-demand reports
 
 ---
 
@@ -149,33 +146,33 @@ In production, the same approach would be used. However:
 
 ### Query Example 1: Revenue by Specialty & Month
 
-* **OLTP execution time:** ~62 ms
-* **Star schema execution time:** ~46 ms
+- **OLTP execution time:** ~62 ms
+- **Star schema execution time:** ~46 ms
 
 **Improvement:**
 62 / 46 ≈ **1.35× faster**
 
 **Main reason for speedup:**
 
-* Removal of billing joins
-* Pre-aggregated revenue stored in the fact table
-* Fewer group-by columns
+- Removal of billing joins
+- Pre-aggregated revenue stored in the fact table
+- Fewer group-by columns
 
 ---
 
 ### Query Example 2: Top Diagnosis–Procedure Pairs
 
-* **OLTP execution time:** ~110 ms
-* **Star schema execution time:** ~78 ms
+- **OLTP execution time:** ~110 ms
+- **Star schema execution time:** ~78 ms
 
 **Improvement:**
 110 / 78 ≈ **1.41× faster**
 
 **Main reason for speedup:**
 
-* Simplified join paths
-* Indexed surrogate keys
-* Reduced normalization depth
+- Simplified join paths
+- Indexed surrogate keys
+- Reduced normalization depth
 
 ---
 
@@ -183,11 +180,32 @@ In production, the same approach would be used. However:
 
 Some queries showed minimal improvement (e.g., 47 ms vs. 47 ms). This is expected because:
 
-* Dataset size is relatively small
-* OLTP schema is well-indexed
-* Performance benefits grow **exponentially** with scale
+- Dataset size is relatively small
+- OLTP schema is well-indexed
+- Performance benefits grow **exponentially** with scale
 
 In large datasets (millions of rows), the star schema advantage becomes far more pronounced.
+
+---
+
+## Implementation Challenges & ETL Refinement
+
+During the implementation of the ETL process, several technical hurdles were identified and resolved to ensure a robust and reliable data pipeline:
+
+### 1. Schema Inconsistencies & Alignment
+
+- **Challenge:** Initial ETL scripts contained mismatching column names between the DDL (`CREATE TABLE`) and the DML (`INSERT INTO`) sections (e.g., `patient_first_name` vs `first_name`).
+- **Solution:** Performed a full reconciliation of the star schema table definitions with the population queries to ensure 1:1 alignment.
+
+### 2. Database Context and Naming Conventions
+
+- **Challenge:** The scripts encountered `Error 1146` (Table not found) due to missing `production.` database prefixes and incorrect table names (e.g., querying `specialty` instead of `specialties`).
+- **Solution:** Standardized all source table references to use fully qualified names (`production.table_name`) and validated table names against the OLTP schema.
+
+### 3. Idempotency and Reliability
+
+- **Challenge:** Repeated script executions led to `Error 1062` (Duplicate entry) for primary and unique keys, preventing reliable re-runs.
+- **Solution:** Implemented `ON DUPLICATE KEY UPDATE` logic for all dimension, fact, and bridge table population steps. This ensures the ETL process is idempotent, allowing it to recover from failures or be re-run manually without requiring manual data truncation.
 
 ---
 
@@ -196,5 +214,3 @@ In large datasets (millions of rows), the star schema advantage becomes far more
 This exercise demonstrates that **schema design matters as much as query tuning**. While OLTP schemas excel at transactional integrity, they are not optimized for analytics. The star schema, despite added ETL complexity, provides a robust, scalable, and performant foundation for analytical workloads.
 
 The observed performance improvements, though modest at this scale, validate the theoretical advantages of dimensional modeling and align with real-world data warehouse best practices.
-
-
