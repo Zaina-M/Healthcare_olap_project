@@ -115,9 +115,9 @@ CREATE TABLE dim_encounter_type (
     UNIQUE (encounter_type_code)
 );
 
--- =========================================
+
 -- OPTIONAL: Diagnosis Dimension
--- =========================================
+
 -- Purpose:
 -- Stores standardized diagnosis information (ICD-10).
 -- Kept separate from the fact table to avoid fact table explosion
@@ -188,9 +188,8 @@ CREATE TABLE fact_encounters (
     FOREIGN KEY (encounter_type_key) REFERENCES dim_encounter_type (encounter_type_key)
 );
 
--- =========================================
+
 -- Indexes for Analytical Queries
--- =========================================
 
 -- Time-based analytics
 CREATE INDEX idx_fact_date
@@ -212,13 +211,12 @@ CREATE INDEX idx_fact_encounter_type
     ON fact_encounters (encounter_type_key);
 
 
--- =========================================
--- BRIDGE TABLES: Many-to-Many Relationships
--- =========================================
 
--- =========================================
+-- BRIDGE TABLES: Many-to-Many Relationships
+
+
 -- Bridge: Encounter ↔ Diagnosis
--- =========================================
+
 -- Purpose:
 -- Resolves the many-to-many relationship between encounters and diagnoses.
 -- Preserves full diagnostic detail without duplicating fact rows.
